@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 import io
+from pathlib import Path
 
 # ──────────────────────────────────────────────
 # Page config
@@ -17,9 +18,17 @@ st.set_page_config(
 )
 
 # ──────────────────────────────────────────────
-# Theme — light only
+# Theme — detect browser dark mode via JS
 # ──────────────────────────────────────────────
-IS_DARK = False
+try:
+    from streamlit_js_eval import streamlit_js_eval
+    _is_dark_raw = streamlit_js_eval(
+        js_expressions="window.matchMedia('(prefers-color-scheme: dark)').matches",
+        key="detect_dark_mode",
+    )
+    IS_DARK = bool(_is_dark_raw) if _is_dark_raw is not None else False
+except Exception:
+    IS_DARK = False
 
 # ──────────────────────────────────────────────
 # Custom CSS with CSS variables for theming
@@ -28,6 +37,7 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
+    /* ───── Light mode (default) ───── */
     :root {
         --header-bg: linear-gradient(135deg, #4f46e5, #6366f1, #818cf8);
         --header-title: #ffffff;
@@ -53,6 +63,42 @@ st.markdown("""
         --empty-border: rgba(99, 102, 241, 0.35);
         --empty-title: #4338ca;
         --empty-sub: #6366f1;
+
+        --text-primary: #1e293b;
+        --text-secondary: #334155;
+    }
+
+    /* ───── Dark mode ───── */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --header-bg: linear-gradient(135deg, #312e81, #3730a3, #4338ca);
+            --header-title: #e0e7ff;
+            --header-sub: #a5b4fc;
+
+            --stat-bg: linear-gradient(135deg, #1e1b4b, #312e81);
+            --stat-border: rgba(129, 140, 248, 0.25);
+            --stat-value: #a5b4fc;
+            --stat-label: #818cf8;
+            --stat-shadow: rgba(99, 102, 241, 0.15);
+
+            --result-bg: linear-gradient(135deg, #064e3b, #065f46);
+            --result-border: rgba(52, 211, 153, 0.25);
+            --result-value: #6ee7b7;
+            --result-label: #34d399;
+            --result-shadow: rgba(16, 185, 129, 0.15);
+
+            --sidebar-bg: linear-gradient(180deg, #0f172a, #1e1b4b);
+            --sidebar-h2: #a5b4fc;
+            --sidebar-h2-border: rgba(129, 140, 248, 0.25);
+
+            --empty-bg: linear-gradient(135deg, #1e1b4b, #312e81);
+            --empty-border: rgba(129, 140, 248, 0.35);
+            --empty-title: #a5b4fc;
+            --empty-sub: #818cf8;
+
+            --text-primary: #e2e8f0;
+            --text-secondary: #cbd5e1;
+        }
     }
 
     /* Global font */
@@ -205,7 +251,21 @@ def build_color_map(cell_types):
 # Plotly theme helper
 # ──────────────────────────────────────────────
 def get_plotly_layout():
-    """Return light-theme Plotly layout kwargs (no title/xaxis/yaxis to avoid conflicts)."""
+    """Return Plotly layout kwargs that adapt to dark / light mode."""
+    if IS_DARK:
+        return dict(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#1e1b4b",
+            font=dict(family="Inter, sans-serif", color="#e2e8f0"),
+            legend=dict(
+                title="Cell Type",
+                bgcolor="rgba(30,27,75,0.9)",
+                bordercolor="rgba(129,140,248,0.20)",
+                borderwidth=1,
+                font=dict(size=11, color="#cbd5e1"),
+            ),
+        )
     return dict(
         template="plotly_white",
         paper_bgcolor="rgba(0,0,0,0)",
@@ -220,18 +280,36 @@ def get_plotly_layout():
         ),
     )
 
+def get_plotly_title_color():
+    """Title font colour for Plotly charts."""
+    return "#e2e8f0" if IS_DARK else "#1e293b"
+
+def get_plotly_grid_color():
+    """Axis grid colour for Plotly charts."""
+    return "rgba(129,140,248,0.12)" if IS_DARK else "rgba(99,102,241,0.08)"
+
 def get_marker_outline_color():
     """Marker outline colour."""
-    return "#e0e7ff"
+    return "#312e81" if IS_DARK else "#e0e7ff"
 
 def get_connection_line_color():
     """Connection line colour for neighbour queries."""
-    return "rgba(99, 102, 241, 0.30)"
+    return "rgba(129, 140, 248, 0.40)" if IS_DARK else "rgba(99, 102, 241, 0.30)"
+
+def get_contour_label_color():
+    """Contour label font colour."""
+    return "#cbd5e1" if IS_DARK else "#334155"
+
+def get_density_scatter_color():
+    """Overlay scatter point colour for density heatmap."""
+    return "#818cf8" if IS_DARK else "#4338ca"
 
 
 # ──────────────────────────────────────────────
 # 1. DATA UPLOAD
 # ──────────────────────────────────────────────
+SAMPLE_FILE = Path(__file__).parent / "sample.xlsx"
+
 with st.sidebar:
     st.markdown("## 📂 Data Upload")
     uploaded = st.file_uploader(
@@ -239,8 +317,13 @@ with st.sidebar:
         type=["csv", "xlsx", "xls"],
         help="File must contain columns for X, Y coordinates and cell type.",
     )
+    if SAMPLE_FILE.exists():
+        load_sample = st.button("📎 Load Sample Data (sample.xlsx)", width='stretch')
+    else:
+        load_sample = False
 
 df = None
+using_sample = False
 
 if uploaded is not None:
     # Read file
@@ -253,7 +336,16 @@ if uploaded is not None:
         st.error(f"Error reading file: {e}")
         st.stop()
 
-    # ── Column mapping ────────────────────────
+elif load_sample:
+    try:
+        df = pd.read_excel(SAMPLE_FILE)
+        using_sample = True
+        st.toast("✅ Sample data loaded!", icon="📎")
+    except Exception as e:
+        st.error(f"Error reading sample file: {e}")
+        st.stop()
+
+if df is not None:
     with st.sidebar:
         st.markdown("## 🗂 Column Mapping")
         cols = list(df.columns)
@@ -292,7 +384,7 @@ if uploaded is not None:
 
     # ── Data preview (expander) ───────────────
     with st.expander("📋 Data Preview", expanded=False):
-        st.dataframe(df.head(50), use_container_width=True)
+        st.dataframe(df.head(50), width='stretch')
 
     # ── Color map ─────────────────────────────
     color_map = build_color_map(df[type_col])
@@ -313,9 +405,9 @@ if uploaded is not None:
     fig.update_traces(marker=dict(size=5, opacity=0.8, line=dict(width=0.3, color=get_marker_outline_color())))
     fig.update_layout(
         **get_plotly_layout(),
-        title=dict(font=dict(size=18, color="#1e293b")),
-        xaxis=dict(gridcolor="rgba(99,102,241,0.08)", zeroline=False),
-        yaxis=dict(gridcolor="rgba(99,102,241,0.08)", zeroline=False, scaleanchor="x"),
+        title=dict(font=dict(size=18, color=get_plotly_title_color())),
+        xaxis=dict(gridcolor=get_plotly_grid_color(), zeroline=False),
+        yaxis=dict(gridcolor=get_plotly_grid_color(), zeroline=False, scaleanchor="x"),
         height=650,
         margin=dict(l=40, r=20, t=50, b=40),
     )
@@ -340,7 +432,7 @@ if uploaded is not None:
         else:
             k_val = st.number_input("K (number of neighbours)", min_value=1, value=5, step=1)
 
-        run_query = st.button("🚀 Run Query", use_container_width=True, type="primary")
+        run_query = st.button("🚀 Run Query", width='stretch', type="primary")
 
     # ── Execute query ─────────────────────────
     if run_query:
@@ -472,7 +564,7 @@ if uploaded is not None:
 
                 # ── Downloadable results ──────────
                 with st.expander("📄 Results Table", expanded=True):
-                    st.dataframe(results_df, use_container_width=True)
+                    st.dataframe(results_df, width='stretch')
 
                     csv_buf = io.StringIO()
                     results_df.to_csv(csv_buf, index=False)
@@ -481,11 +573,11 @@ if uploaded is not None:
                         csv_buf.getvalue(),
                         file_name="spatial_query_results.csv",
                         mime="text/csv",
-                        use_container_width=True,
+                        width='stretch',
                     )
 
     # ── Render the (possibly updated) figure ──
-    st.plotly_chart(fig, use_container_width=True, key="main_scatter")
+    st.plotly_chart(fig, width='stretch', key="main_scatter")
 
     # ══════════════════════════════════════════
     # 4. ANALYSIS & STATISTICS
@@ -528,7 +620,7 @@ if uploaded is not None:
             margin=dict(l=10, r=20, t=50, b=40),
             yaxis=dict(title=""),
         )
-        st.plotly_chart(fig_comp, use_container_width=True, key="composition")
+        st.plotly_chart(fig_comp, width='stretch', key="composition")
 
         # Percentage table
         comp_df = pd.DataFrame({
@@ -536,7 +628,7 @@ if uploaded is not None:
             "Count": counts.values,
             "Percentage": (counts.values / counts.values.sum() * 100).round(1),
         }).reset_index(drop=True)
-        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+        st.dataframe(comp_df, width='stretch', hide_index=True)
 
     # ──────────────────────────────────────────
     # TAB 2: Density Heatmap (2D Histogram)
@@ -557,7 +649,7 @@ if uploaded is not None:
                 x=dens_df[x_col],
                 y=dens_df[y_col],
                 colorscale="Blues",
-                contours=dict(showlabels=True, labelfont=dict(size=10, color="#334155")),
+                contours=dict(showlabels=True, labelfont=dict(size=10, color=get_contour_label_color())),
                 ncontours=15,
                 showscale=True,
             )
@@ -566,7 +658,7 @@ if uploaded is not None:
         fig_dens.add_trace(go.Scatter(
             x=dens_df[x_col], y=dens_df[y_col],
             mode="markers",
-            marker=dict(size=3, color="#4338ca", opacity=0.4),
+            marker=dict(size=3, color=get_density_scatter_color(), opacity=0.4),
             hoverinfo="skip",
             showlegend=False,
         ))
@@ -577,7 +669,7 @@ if uploaded is not None:
             margin=dict(l=40, r=20, t=50, b=40),
             yaxis=dict(scaleanchor="x"),
         )
-        st.plotly_chart(fig_dens, use_container_width=True, key="density")
+        st.plotly_chart(fig_dens, width='stretch', key="density")
         st.caption(f"Showing **{len(dens_df):,}** cells. Contour lines represent regions of equal density.")
 
     # ──────────────────────────────────────────
@@ -595,7 +687,7 @@ if uploaded is not None:
             min_value=1.0, value=50.0, step=10.0, key="morans_radius",
         )
 
-        if st.button("🧮 Compute Moran's I", key="run_morans", use_container_width=True):
+        if st.button("🧮 Compute Moran's I", key="run_morans", width='stretch'):
             tree_all = cKDTree(coords)
             # Build sparse binary weight matrix via ball-tree query
             pairs = tree_all.query_pairs(r=morans_radius, output_type="ndarray")
@@ -634,7 +726,7 @@ if uploaded is not None:
                                    "Interpretation": interp, "N cells": int(z.sum())})
 
             moran_df = pd.DataFrame(moran_rows)
-            st.dataframe(moran_df, use_container_width=True, hide_index=True)
+            st.dataframe(moran_df, width='stretch', hide_index=True)
 
         st.markdown("---")
         st.markdown("#### Ripley's K Function")
@@ -653,7 +745,7 @@ if uploaded is not None:
         )
         ripley_steps = 30
 
-        if st.button("🧮 Compute Ripley's K", key="run_ripley", use_container_width=True):
+        if st.button("🧮 Compute Ripley's K", key="run_ripley", width='stretch'):
             ct_mask = types_series.values == ripley_type
             ct_coords = coords[ct_mask]
             n_ct = len(ct_coords)
@@ -700,7 +792,7 @@ if uploaded is not None:
                     margin=dict(l=40, r=20, t=50, b=40),
                     yaxis=dict(scaleanchor=None),
                 )
-                st.plotly_chart(fig_rip, use_container_width=True, key="ripley")
+                st.plotly_chart(fig_rip, width='stretch', key="ripley")
                 st.caption(
                     "If the **blue line** is above the **dashed CSR line**, "
                     "the cell type is **clustered**. Below = **dispersed**."
@@ -715,7 +807,7 @@ if uploaded is not None:
             "Diagonal = mean intra-type distance."
         )
 
-        if st.button("📏 Compute Pairwise Distances", key="run_pairwise", use_container_width=True):
+        if st.button("📏 Compute Pairwise Distances", key="run_pairwise", width='stretch'):
             n_types_pw = len(unique_types_sorted)
             dist_matrix = np.zeros((n_types_pw, n_types_pw))
 
@@ -760,7 +852,7 @@ if uploaded is not None:
                 margin=dict(l=10, r=20, t=50, b=10),
                 yaxis=dict(scaleanchor=None),
             )
-            st.plotly_chart(fig_pw, use_container_width=True, key="pairwise")
+            st.plotly_chart(fig_pw, width='stretch', key="pairwise")
 
     # ──────────────────────────────────────────
     # TAB 5: Co-occurrence Analysis
@@ -777,7 +869,7 @@ if uploaded is not None:
             min_value=1.0, value=50.0, step=10.0, key="coocc_radius",
         )
 
-        if st.button("🔗 Compute Co-occurrence", key="run_coocc", use_container_width=True):
+        if st.button("🔗 Compute Co-occurrence", key="run_coocc", width='stretch'):
             tree_all = cKDTree(coords)
             pairs = tree_all.query_pairs(r=coocc_radius, output_type="ndarray")
 
@@ -820,7 +912,7 @@ if uploaded is not None:
                     margin=dict(l=10, r=20, t=50, b=10),
                     yaxis=dict(scaleanchor=None),
                 )
-                st.plotly_chart(fig_co_raw, use_container_width=True, key="coocc_raw")
+                st.plotly_chart(fig_co_raw, width='stretch', key="coocc_raw")
 
             with co_norm_tab:
                 fig_co_norm = px.imshow(
@@ -839,7 +931,7 @@ if uploaded is not None:
                     margin=dict(l=10, r=20, t=50, b=10),
                     yaxis=dict(scaleanchor=None),
                 )
-                st.plotly_chart(fig_co_norm, use_container_width=True, key="coocc_norm")
+                st.plotly_chart(fig_co_norm, width='stretch', key="coocc_norm")
 
             st.caption(
                 "High normalised values indicate cell types that co-locate "
