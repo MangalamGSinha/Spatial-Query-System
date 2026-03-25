@@ -27,7 +27,7 @@ An interactive Streamlit application for visualizing and analyzing spatial cell-
 ## Installation
 
 ```bash
-git clone https://github.com/MangalamGSinha>/spatial-query-system.git
+git clone https://github.com/MangalamGSinha/Spatial-Query-System.git
 cd spatial-query-system
 pip install -r requirements.txt
 ```
