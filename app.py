@@ -212,10 +212,12 @@ st.markdown("""
         margin: 0;
     }
 
-    /* Hide Streamlit branding */
+    /* Hide Streamlit branding but keep sidebar toggle */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    header[data-testid="stHeader"] {background: transparent; }
+    header[data-testid="stHeader"] .stDeployButton,
+    header[data-testid="stHeader"] .stToolbar {display: none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -407,171 +409,7 @@ if df is not None:
         margin=dict(l=40, r=20, t=50, b=40),
     )
 
-    # ──────────────────────────────────────────
-    # 3. NEAREST NEIGHBOUR QUERY PANEL
-    # ──────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("## 🔍 Nearest Neighbour Query")
-
-        unique_types = sorted(df[type_col].dropna().unique())
-
-        query_type = st.selectbox("Query cell type (source)", unique_types, key="query_type")
-        target_options = ["All Types"] + unique_types
-        target_type = st.selectbox("Target cell type (neighbours)", target_options, key="target_type")
-
-        mode = st.radio("Query mode", ["Radius", "KNN"], horizontal=True)
-
-        if mode == "Radius":
-            radius = st.number_input("Radius", min_value=1.0, value=100.0, step=10.0)
-        else:
-            k_val = st.number_input("K (number of neighbours)", min_value=1, value=5, step=1)
-
-        run_query = st.button("🚀 Run Query", width='stretch', type="primary")
-
-    # ── Execute query ─────────────────────────
-    if run_query:
-        query_mask = df[type_col] == query_type
-        query_df = df[query_mask].copy()
-
-        if target_type == "All Types":
-            target_mask = ~query_mask  # everything except the query type itself
-        else:
-            target_mask = df[type_col] == target_type
-        target_df = df[target_mask].copy()
-
-        if len(query_df) == 0:
-            st.warning("No cells found for the selected query type.")
-        elif len(target_df) == 0:
-            st.warning("No cells found for the selected target type.")
-        else:
-            query_coords = query_df[[x_col, y_col]].values
-            target_coords = target_df[[x_col, y_col]].values
-
-            tree = cKDTree(target_coords)
-
-            all_neighbour_rows = []
-            lines_x = []
-            lines_y = []
-
-            if mode == "Radius":
-                indices_list = tree.query_ball_point(query_coords, r=radius)
-                for qi, indices in enumerate(indices_list):
-                    if len(indices) == 0:
-                        continue
-                    qx, qy = query_coords[qi]
-                    for idx in indices:
-                        nb = target_df.iloc[idx]
-                        dist = np.sqrt((qx - nb[x_col])**2 + (qy - nb[y_col])**2)
-                        all_neighbour_rows.append({
-                            "Query_Cell_Type": query_type,
-                            "Query_X": qx,
-                            "Query_Y": qy,
-                            "Neighbour_Cell_Type": nb[type_col],
-                            "Neighbour_X": nb[x_col],
-                            "Neighbour_Y": nb[y_col],
-                            "Distance": round(dist, 2),
-                        })
-                        lines_x += [qx, nb[x_col], None]
-                        lines_y += [qy, nb[y_col], None]
-            else:
-                k = min(k_val, len(target_df))
-                dists, indices = tree.query(query_coords, k=k)
-                if k == 1:
-                    dists = dists.reshape(-1, 1)
-                    indices = indices.reshape(-1, 1)
-                for qi in range(len(query_coords)):
-                    qx, qy = query_coords[qi]
-                    for j in range(k):
-                        idx = indices[qi, j]
-                        d = dists[qi, j]
-                        nb = target_df.iloc[idx]
-                        all_neighbour_rows.append({
-                            "Query_Cell_Type": query_type,
-                            "Query_X": qx,
-                            "Query_Y": qy,
-                            "Neighbour_Cell_Type": nb[type_col],
-                            "Neighbour_X": nb[x_col],
-                            "Neighbour_Y": nb[y_col],
-                            "Distance": round(d, 2),
-                        })
-                        lines_x += [qx, nb[x_col], None]
-                        lines_y += [qy, nb[y_col], None]
-
-            results_df = pd.DataFrame(all_neighbour_rows)
-
-            if len(results_df) == 0:
-                st.warning("No neighbours found with the given parameters.")
-            else:
-                # ── Add connecting lines to figure ──
-                fig.add_trace(go.Scatter(
-                    x=lines_x, y=lines_y,
-                    mode="lines",
-                    line=dict(color=get_connection_line_color(), width=0.8),
-                    hoverinfo="skip",
-                    showlegend=False,
-                    name="connections",
-                ))
-
-                # Highlight query cells
-                fig.add_trace(go.Scatter(
-                    x=query_df[x_col], y=query_df[y_col],
-                    mode="markers",
-                    marker=dict(size=9, color="#facc15", symbol="diamond",
-                                line=dict(width=1.5, color="#ffffff")),
-                    name=f"Query: {query_type}",
-                    hovertemplate=f"<b>Query: {query_type}</b><br>X: %{{x}}<br>Y: %{{y}}<extra></extra>",
-                ))
-
-                # Highlight neighbour cells
-                nb_x = results_df["Neighbour_X"].values
-                nb_y = results_df["Neighbour_Y"].values
-                fig.add_trace(go.Scatter(
-                    x=nb_x, y=nb_y,
-                    mode="markers",
-                    marker=dict(size=7, color="#f472b6", symbol="circle",
-                                line=dict(width=1, color="#ffffff")),
-                    name="Neighbours",
-                    hovertemplate="<b>Neighbour</b><br>X: %{x}<br>Y: %{y}<extra></extra>",
-                ))
-
-                # ── Summary statistics ────────────
-                st.markdown("### 📊 Query Results")
-                mode_label = f"Radius = {radius}" if mode == "Radius" else f"K = {k_val}"
-                st.caption(f"**{query_type}** → **{target_type}** | Mode: {mode} ({mode_label})")
-
-                r1, r2, r3 = st.columns(3)
-                r1.markdown(
-                    f'<div class="result-card"><p class="result-value">{len(results_df):,}</p>'
-                    f'<p class="result-label">Total Neighbour Pairs</p></div>',
-                    unsafe_allow_html=True,
-                )
-                r2.markdown(
-                    f'<div class="result-card"><p class="result-value">{results_df["Distance"].mean():.1f}</p>'
-                    f'<p class="result-label">Mean Distance</p></div>',
-                    unsafe_allow_html=True,
-                )
-                r3.markdown(
-                    f'<div class="result-card"><p class="result-value">{results_df["Distance"].median():.1f}</p>'
-                    f'<p class="result-label">Median Distance</p></div>',
-                    unsafe_allow_html=True,
-                )
-
-                # ── Downloadable results ──────────
-                with st.expander("📄 Results Table", expanded=True):
-                    st.dataframe(results_df, width='stretch')
-
-                    csv_buf = io.StringIO()
-                    results_df.to_csv(csv_buf, index=False)
-                    st.download_button(
-                        "⬇️ Download Results CSV",
-                        csv_buf.getvalue(),
-                        file_name="spatial_query_results.csv",
-                        mime="text/csv",
-                        width='stretch',
-                    )
-
-    # ── Render the (possibly updated) figure ──
+    # ── Render the spatial distribution figure ──
     st.plotly_chart(fig, width='stretch', key="main_scatter")
 
     # ══════════════════════════════════════════
@@ -580,7 +418,8 @@ if df is not None:
     st.markdown("---")
     st.markdown("### 📈 Analysis & Statistics")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab_nn, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🔍 Nearest Neighbour",
         "📊 Composition",
         "🌡️ Density Heatmap",
         "🧮 Spatial Autocorrelation",
@@ -593,6 +432,188 @@ if df is not None:
     coords = df_clean[[x_col, y_col]].values
     types_series = df_clean[type_col]
     unique_types_sorted = sorted(types_series.unique())
+
+    # ──────────────────────────────────────────
+    # TAB NN: Nearest Neighbour Query
+    # ──────────────────────────────────────────
+    with tab_nn:
+        unique_types = sorted(df[type_col].dropna().unique())
+
+        nn_col1, nn_col2 = st.columns(2)
+        with nn_col1:
+            query_type = st.selectbox("Query cell type (source)", unique_types, key="query_type")
+            mode = st.radio("Query mode", ["Radius", "KNN"], horizontal=True)
+        with nn_col2:
+            target_options = ["All Types"] + unique_types
+            target_type = st.selectbox("Target cell type (neighbours)", target_options, key="target_type")
+            if mode == "Radius":
+                radius = st.number_input("Radius", min_value=1.0, value=100.0, step=10.0)
+            else:
+                k_val = st.number_input("K (number of neighbours)", min_value=1, value=5, step=1)
+
+        run_query = st.button("🚀 Run Query", width='stretch', type="primary", key="run_nn_query")
+
+        if run_query:
+            query_mask = df[type_col] == query_type
+            query_df = df[query_mask].copy()
+
+            if target_type == "All Types":
+                target_mask = ~query_mask
+            else:
+                target_mask = df[type_col] == target_type
+            target_df = df[target_mask].copy()
+
+            if len(query_df) == 0:
+                st.warning("No cells found for the selected query type.")
+            elif len(target_df) == 0:
+                st.warning("No cells found for the selected target type.")
+            else:
+                query_coords = query_df[[x_col, y_col]].values
+                target_coords = target_df[[x_col, y_col]].values
+
+                tree = cKDTree(target_coords)
+
+                all_neighbour_rows = []
+                lines_x = []
+                lines_y = []
+
+                if mode == "Radius":
+                    indices_list = tree.query_ball_point(query_coords, r=radius)
+                    for qi, indices in enumerate(indices_list):
+                        if len(indices) == 0:
+                            continue
+                        qx, qy = query_coords[qi]
+                        for idx in indices:
+                            nb = target_df.iloc[idx]
+                            dist = np.sqrt((qx - nb[x_col])**2 + (qy - nb[y_col])**2)
+                            all_neighbour_rows.append({
+                                "Query_Cell_Type": query_type,
+                                "Query_X": qx,
+                                "Query_Y": qy,
+                                "Neighbour_Cell_Type": nb[type_col],
+                                "Neighbour_X": nb[x_col],
+                                "Neighbour_Y": nb[y_col],
+                                "Distance": round(dist, 2),
+                            })
+                            lines_x += [qx, nb[x_col], None]
+                            lines_y += [qy, nb[y_col], None]
+                else:
+                    k = min(k_val, len(target_df))
+                    dists, indices = tree.query(query_coords, k=k)
+                    if k == 1:
+                        dists = dists.reshape(-1, 1)
+                        indices = indices.reshape(-1, 1)
+                    for qi in range(len(query_coords)):
+                        qx, qy = query_coords[qi]
+                        for j in range(k):
+                            idx = indices[qi, j]
+                            d = dists[qi, j]
+                            nb = target_df.iloc[idx]
+                            all_neighbour_rows.append({
+                                "Query_Cell_Type": query_type,
+                                "Query_X": qx,
+                                "Query_Y": qy,
+                                "Neighbour_Cell_Type": nb[type_col],
+                                "Neighbour_X": nb[x_col],
+                                "Neighbour_Y": nb[y_col],
+                                "Distance": round(d, 2),
+                            })
+                            lines_x += [qx, nb[x_col], None]
+                            lines_y += [qy, nb[y_col], None]
+
+                results_df = pd.DataFrame(all_neighbour_rows)
+
+                if len(results_df) == 0:
+                    st.warning("No neighbours found with the given parameters.")
+                else:
+                    # ── Neighbour scatter plot ──
+                    fig_nn = px.scatter(
+                        df,
+                        x=x_col, y=y_col,
+                        color=type_col,
+                        color_discrete_map=color_map,
+                        hover_data={type_col: True, x_col: True, y_col: True},
+                        title="Nearest Neighbour Query Results",
+                        labels={x_col: "X", y_col: "Y", type_col: "Cell Type"},
+                    )
+                    fig_nn.update_traces(marker=dict(size=5, opacity=0.3, line=dict(width=0.3, color=get_marker_outline_color())))
+
+                    # Connection lines
+                    fig_nn.add_trace(go.Scatter(
+                        x=lines_x, y=lines_y,
+                        mode="lines",
+                        line=dict(color=get_connection_line_color(), width=0.8),
+                        hoverinfo="skip",
+                        showlegend=False,
+                        name="connections",
+                    ))
+
+                    # Highlight query cells
+                    fig_nn.add_trace(go.Scatter(
+                        x=query_df[x_col], y=query_df[y_col],
+                        mode="markers",
+                        marker=dict(size=9, color="#facc15", symbol="diamond",
+                                    line=dict(width=1.5, color="#ffffff")),
+                        name=f"Query: {query_type}",
+                        hovertemplate=f"<b>Query: {query_type}</b><br>X: %{{x}}<br>Y: %{{y}}<extra></extra>",
+                    ))
+
+                    # Highlight neighbour cells
+                    nb_x = results_df["Neighbour_X"].values
+                    nb_y = results_df["Neighbour_Y"].values
+                    fig_nn.add_trace(go.Scatter(
+                        x=nb_x, y=nb_y,
+                        mode="markers",
+                        marker=dict(size=7, color="#f472b6", symbol="circle",
+                                    line=dict(width=1, color="#ffffff")),
+                        name="Neighbours",
+                        hovertemplate="<b>Neighbour</b><br>X: %{x}<br>Y: %{y}<extra></extra>",
+                    ))
+
+                    fig_nn.update_layout(
+                        **get_plotly_layout(),
+                        title=dict(font=dict(size=18, color=get_plotly_title_color())),
+                        xaxis=dict(gridcolor=get_plotly_grid_color(), zeroline=False),
+                        yaxis=dict(gridcolor=get_plotly_grid_color(), zeroline=False, scaleanchor="x"),
+                        height=650,
+                        margin=dict(l=40, r=20, t=50, b=40),
+                    )
+                    st.plotly_chart(fig_nn, width='stretch', key="nn_scatter")
+
+                    # ── Summary statistics ────────────
+                    mode_label = f"Radius = {radius}" if mode == "Radius" else f"K = {k_val}"
+                    st.caption(f"**{query_type}** → **{target_type}** | Mode: {mode} ({mode_label})")
+
+                    r1, r2, r3 = st.columns(3)
+                    r1.markdown(
+                        f'<div class="result-card"><p class="result-value">{len(results_df):,}</p>'
+                        f'<p class="result-label">Total Neighbour Pairs</p></div>',
+                        unsafe_allow_html=True,
+                    )
+                    r2.markdown(
+                        f'<div class="result-card"><p class="result-value">{results_df["Distance"].mean():.1f}</p>'
+                        f'<p class="result-label">Mean Distance</p></div>',
+                        unsafe_allow_html=True,
+                    )
+                    r3.markdown(
+                        f'<div class="result-card"><p class="result-value">{results_df["Distance"].median():.1f}</p>'
+                        f'<p class="result-label">Median Distance</p></div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # ── Downloadable results ──────────
+                    with st.expander("📄 Results Table", expanded=True):
+                        st.dataframe(results_df, width='stretch')
+
+                        csv_buf = io.StringIO()
+                        results_df.to_csv(csv_buf, index=False)
+                        st.download_button(
+                            "⬇️ Download Results CSV",
+                            csv_buf.getvalue(),
+                            file_name="spatial_query_results.csv",
+                            mime="text/csv",
+                            width='stretch',
+                        )
 
     # ──────────────────────────────────────────
     # TAB 1: Cell Type Composition
