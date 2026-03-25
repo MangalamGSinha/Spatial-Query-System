@@ -318,12 +318,16 @@ with st.sidebar:
         help="File must contain columns for X, Y coordinates and cell type.",
     )
     if SAMPLE_FILE.exists():
-        load_sample = st.button("📎 Load Sample Data (sample.xlsx)", width='stretch')
-    else:
-        load_sample = False
+        with open(SAMPLE_FILE, "rb") as f:
+            st.download_button(
+                "⬇️ Download Sample Data (sample.xlsx)",
+                data=f,
+                file_name="sample.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch',
+            )
 
 df = None
-using_sample = False
 
 if uploaded is not None:
     # Read file
@@ -334,15 +338,6 @@ if uploaded is not None:
             df = pd.read_excel(uploaded)
     except Exception as e:
         st.error(f"Error reading file: {e}")
-        st.stop()
-
-elif load_sample:
-    try:
-        df = pd.read_excel(SAMPLE_FILE)
-        using_sample = True
-        st.toast("✅ Sample data loaded!", icon="📎")
-    except Exception as e:
-        st.error(f"Error reading sample file: {e}")
         st.stop()
 
 if df is not None:
